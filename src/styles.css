@@ -261,6 +261,13 @@ body {
 
 .cue-node-res {
   margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.cue-node-res-tag {
   display: inline-block;
   max-width: 100%;
   font-size: 11px;
@@ -504,6 +511,99 @@ body {
 
 .res-none {
   color: var(--text-dim);
+}
+
+/* 属性面板：多选资源录入 */
+.res-pick-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.res-pick-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #e8cf94;
+  background: rgba(216, 180, 106, 0.12);
+  border: 1px solid rgba(216, 180, 106, 0.45);
+  border-radius: 5px;
+  padding: 2px 4px 2px 7px;
+  max-width: 100%;
+}
+
+.res-pick-chip-x {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #e8cf94;
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 4px;
+}
+
+.res-pick-chip-x:hover {
+  background: rgba(255, 90, 90, 0.25);
+  color: #ffb3b3;
+}
+
+.res-pick-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.res-pick-existing {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.res-pick-opt {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text-dim);
+  border-radius: 12px;
+  padding: 2px 9px;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
+}
+
+.res-pick-opt:hover {
+  border-color: #d8b46a;
+  color: var(--text);
+}
+
+.res-pick-opt-on {
+  color: #e8cf94;
+  border-color: rgba(216, 180, 106, 0.7);
+  background: rgba(216, 180, 106, 0.16);
+  font-weight: 600;
+}
+
+.res-pick-add {
+  display: flex;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.res-pick-add .btn {
+  flex: none;
+  padding: 7px 12px;
+}
+
+.res-tag-list {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  max-width: 160px;
 }
 
 /* 资源占用面板 */

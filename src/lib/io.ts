@@ -1,19 +1,23 @@
 /**
  * JSON 导入 / 导出：文件格式 v1。
  *
+ * 新格式（导出）：
  * {
  *   "version": 1,
  *   "exportedAt": "...",        // 可选
  *   "nodes": [{
  *     "id", "type", "label", "duration", "delay",
- *     "resource": "追光1",       // 可选；缺省 / 空串 = 不占用资源
+ *     "resources": ["追光1", "麦克风A"],  // 资源名数组，可多选；空数组 = 不占用
  *     "position": {x, y}
  *   }],
  *   "edges": [{ "id", "source", "target" }]
  * }
+ *
+ * 旧格式（导入兼容）：节点上为单个 "resource": "追光1" 字符串字段
+ * （缺省 / null / 空串表示不占用）；若新旧字段同时存在则合并去重。
  */
 import { CUE_TYPES, type CueType } from '../types';
-import { normalizeResource, wouldCreateCycleWithResources } from './schedule';
+import { nodeResources, normalizeResources, wouldCreateCycleWithResources } from './schedule';
 
 export const SHOW_FILE_VERSION = 1;
 
@@ -23,7 +27,8 @@ export interface ImportedNode {
   label: string;
   duration: number;
   delay: number;
-  resource: string;
+  /** 占用的资源名列表（已去重；空数组表示不占用资源） */
+  resources: string[];
   position: { x: number; y: number };
 }
 
@@ -42,6 +47,8 @@ export function serializeShow(
       cueType: CueType;
       duration: number;
       delay: number;
+      resources?: string[];
+      /** 旧字段仅在兼容读取时可能出现，导出统一写 resources 数组 */
       resource?: string;
     };
   }>,
@@ -56,7 +63,8 @@ export function serializeShow(
       label: n.data.label,
       duration: n.data.duration,
       delay: n.data.delay,
-      resource: normalizeResource(n.data.resource),
+      // 导出统一改用 resources 数组（空数组表示不占用资源）
+      resources: nodeResources(n.data),
       position: { x: Math.round(n.position.x), y: Math.round(n.position.y) },
     })),
     edges: edges.map((e) => ({ id: e.id, source: e.source, target: e.target })),
@@ -70,6 +78,18 @@ export type ParseResult =
 
 function fail(error: string): ParseResult {
   return { ok: false, error };
+}
+
+/**
+ * 读取节点的资源列表：新字段 resources（字符串数组）与旧字段
+ * resource（单个字符串，含缺省 / null / 空串）合并后去重。
+ * 类型校验由 parseShow 在调用前完成。
+ */
+function parseNodeResources(n: Record<string, unknown>): string[] {
+  return normalizeResources([
+    ...normalizeResources(n.resources),
+    ...nodeResources({ resource: n.resource }),
+  ]);
 }
 
 export function parseShow(text: string): ParseResult {
@@ -101,8 +121,20 @@ export function parseShow(text: string): ParseResult {
     const delay = Number(n.delay ?? 0);
     if (!Number.isFinite(duration) || duration < 0) return fail(`${where}（${n.id}）持续时间无效`);
     if (!Number.isFinite(delay) || delay < 0) return fail(`${where}（${n.id}）延迟无效`);
-    // resource 缺省（旧版文件 / 未填写）一律视为不占用资源
-    const resource = normalizeResource(n.resource);
+    // resources 必须是字符串数组（空串项忽略）；旧版 resource 字符串字段合并兼容
+    if (n.resources !== undefined && n.resources !== null) {
+      if (!Array.isArray(n.resources) || n.resources.some((r) => typeof r !== 'string')) {
+        return fail(`${where}（${n.id}）resources 必须是字符串数组`);
+      }
+    }
+    if (
+      n.resource !== undefined &&
+      n.resource !== null &&
+      typeof n.resource !== 'string'
+    ) {
+      return fail(`${where}（${n.id}）resource 必须是字符串`);
+    }
+    const resources = parseNodeResources(n);
     const pos = (typeof n.position === 'object' && n.position !== null ? n.position : {}) as Record<string, unknown>;
     const px = Number(pos.x);
     const py = Number(pos.y);
@@ -112,7 +144,7 @@ export function parseShow(text: string): ParseResult {
       label: typeof n.label === 'string' && n.label.trim() !== '' ? n.label : n.id,
       duration,
       delay,
-      resource,
+      resources,
       position: {
         x: Number.isFinite(px) ? px : 80 + (i % 4) * 280,
         y: Number.isFinite(py) ? py : 80 + Math.floor(i / 4) * 120,
@@ -132,10 +164,10 @@ export function parseShow(text: string): ParseResult {
     if (!ids.has(e.source) || !ids.has(e.target)) {
       return fail(`${where}（${e.source} → ${e.target}）引用了不存在的节点`);
     }
-    // 逐条校验：显式依赖与「按节点顺序的资源串行」共同构成的约束图必须无环
+    // 逐条校验：显式依赖与「按节点顺序的资源串行（含多项资源）」共同构成的约束图必须无环
     const schedNodes = nodes.map((n) => ({
       id: n.id,
-      data: { duration: n.duration, delay: n.delay, resource: n.resource, label: n.label },
+      data: { duration: n.duration, delay: n.delay, resources: n.resources, label: n.label },
     }));
     if (wouldCreateCycleWithResources(schedNodes, edges, e.source, e.target)) {
       return fail(

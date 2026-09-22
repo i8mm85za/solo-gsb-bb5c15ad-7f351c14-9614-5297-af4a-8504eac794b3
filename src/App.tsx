@@ -27,7 +27,7 @@ import {
   combinedGraphHasCycle,
   computeSchedule,
   layeredLayout,
-  normalizeResource,
+  normalizeResources,
   wouldCreateCycleWithResources,
 } from './lib/schedule';
 import { useReplay } from './hooks/useReplay';
@@ -157,7 +157,7 @@ export default function App() {
           cueType: type,
           duration: 3,
           delay: 0,
-          resource: '',
+          resources: [],
         },
         selected: true,
       };
@@ -169,20 +169,18 @@ export default function App() {
 
   const updateCue = useCallback(
     (id: string, patch: Partial<CueNodeData>) => {
-      // 资源名修改后，资源串行顺序可能与显式依赖矛盾（成环），拒绝本次修改并恢复原值
-      if (patch.resource !== undefined) {
+      // 资源编辑后，节点在每项资源队列中的串行顺序可能与显式依赖矛盾（成环）；
+      // 拒绝本次修改并保留原值（UI 不应用新列表），由属性面板给出提示。
+      if (patch.resources !== undefined) {
+        const nextResources = normalizeResources(patch.resources);
         const candidate = nodes.map((n) =>
-          n.id === id ? { ...n, data: { ...n.data, resource: normalizeResource(patch.resource) } } : n,
+          n.id === id ? { ...n, data: { ...n.data, resources: nextResources } } : n,
         );
         if (combinedGraphHasCycle(candidate, edges)) {
-          showToast('该资源会与依赖顺序冲突：同资源提示按节点顺序串行，请调整资源或节点顺序');
-          const prev = nodes.find((n) => n.id === id)?.data.resource ?? '';
-          setNodes((nds) =>
-            nds.map((n) => (n.id === id ? { ...n, data: { ...n.data, resource: prev } } : n)),
-          );
+          showToast('该资源组合会与依赖顺序冲突：同资源提示按节点顺序串行，请调整资源或节点顺序');
           return;
         }
-        patch = { ...patch, resource: normalizeResource(patch.resource) };
+        patch = { ...patch, resources: nextResources };
       }
       setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...patch } } : n)));
     },
@@ -266,7 +264,7 @@ export default function App() {
             cueType: n.cueType,
             duration: n.duration,
             delay: n.delay,
-            resource: n.resource,
+            resources: n.resources,
           },
           selected: false,
         })),

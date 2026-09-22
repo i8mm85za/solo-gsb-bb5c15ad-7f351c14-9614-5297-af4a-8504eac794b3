@@ -3,14 +3,17 @@
  *
  * 模型约定：
  * - 每条连线 source -> target 表示「target 依赖 source」；
- * - 节点可声明占用的舞台资源（resource，如「追光1」）；
- *   同一资源同一时刻只能服务一个提示，因此同资源上的节点按 nodes
- *   给定的顺序自动串行：序列中靠后的节点隐含依赖前一个节点；
+ * - 节点可同时声明占用多项舞台资源（resources，如「追光1」「麦克风A」，
+ *   旧版单个 resource 字段仍被读取）；同一资源同一时刻只能服务一个提示，
+ *   因此节点会被加入它所占用的每项资源的串行队列：同资源上的节点按
+ *   nodes 给定顺序自动串行——序列中靠后的节点隐含依赖前一个节点，
+ *   该隐含约束对其占用的每一项资源分别建立；
  * - 资源串行约束与显式依赖边共同参与正向 / 反向调度：
- *     最早触发 = max(所有前置约束满足时刻) + delay
+ *     最早触发 = max(所有前置约束满足时刻，含所需各资源释放) + delay
  *     最早结束 = 最早触发 + duration
  *     总时长   = max(所有节点最早结束)
  *   再反向传递求最晚时刻，松弛为 0 的节点构成关键路径；
+ * - 同一节点在每项资源队列中展示完全一致的排程区间（统一取自调度结果）；
  * - 关键路径上的约束（显式依赖或资源串行）均以关键样式标记。
  */
 
@@ -19,7 +22,9 @@ export interface SchedNodeLike {
   data: {
     duration: number;
     delay: number;
-    /** 资源名；空串 / undefined 表示不占用资源 */
+    /** 资源名列表（新格式）：空数组 / undefined 表示不占用资源 */
+    resources?: string[];
+    /** 资源名（旧格式）：空串 / undefined 表示不占用资源，仅作向后兼容读取 */
     resource?: string;
     /** 仅用于资源队列展示，调度本身不依赖 */
     label?: string;
@@ -41,8 +46,8 @@ export interface NodeSchedule {
   slack: number;
   /** 是否在关键路径上 */
   critical: boolean;
-  /** 调度生效的资源名（空串表示未占用资源） */
-  resource: string;
+  /** 调度生效的资源名列表（空数组表示未占用资源），已去重 */
+  resources: string[];
 }
 
 /** 资源队列中的一项排程 */
@@ -100,9 +105,36 @@ function nonNeg(v: number): number {
   return Number.isFinite(v) && v > 0 ? v : 0;
 }
 
-/** 规整资源名：去首尾空白；空值统一为空串 */
+/** 规整单个资源名：去首尾空白；空值统一为空串 */
 export function normalizeResource(r: unknown): string {
   return typeof r === 'string' ? r.trim() : '';
+}
+
+/**
+ * 规整资源列表：逐项去首尾空白、丢弃空项并按出现顺序去重。
+ * 接受字符串数组（新格式 resources）；其余类型返回空列表。
+ */
+export function normalizeResources(rs: unknown): string[] {
+  if (!Array.isArray(rs)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const r of rs) {
+    const name = normalizeResource(r);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
+/**
+ * 读取一个节点实际占用的资源列表（已规整、去重）：
+ * 优先使用新字段 resources；同时兼容旧版单个 resource 字段。
+ */
+export function nodeResources(data: { resources?: unknown; resource?: unknown }): string[] {
+  if (Array.isArray(data.resources)) return normalizeResources(data.resources);
+  const legacy = normalizeResource(data.resource);
+  return legacy ? [legacy] : [];
 }
 
 /**
@@ -126,7 +158,8 @@ export function wouldCreateCycle(
 
 /**
  * 综合约束（显式依赖 + 资源串行）下，新增 source -> target 是否成环。
- * 资源串行按 nodes 顺序构建：同资源第 k 个节点 -> 第 k+1 个节点。
+ * 资源串行按 nodes 顺序构建：同资源第 k 个节点 -> 第 k+1 个节点；
+ * 占用多项资源的节点在每项资源队列中各占一个位置。
  * 用于连线与导入校验，避免资源顺序与依赖互相矛盾。
  */
 export function wouldCreateCycleWithResources<N extends SchedNodeLike>(
@@ -217,34 +250,49 @@ function topoOrder(
 interface ResourceConstraint {
   /** 每个资源上的节点 id，按 nodes 顺序（即串行顺序） */
   ordered: Map<string, string[]>;
-  /** 节点 -> 同资源队列中的前一节点 */
-  pred: Map<string, string>;
-  /** 节点 -> 所属资源名 */
-  byNode: Map<string, string>;
+  /**
+   * 串行约束边（同资源相邻两项，按资源分别建立）。
+   * key 为 `${source}->${target}`，value 为该约束来自的资源名列表
+   * （同一节点对可能因共用多项资源而产生多条相同约束，已合并去重）。
+   */
+  predEdges: Map<string, { source: string; target: string; resources: string[] }>;
+  /** 节点 -> 其占用的全部资源名（去重） */
+  byNode: Map<string, string[]>;
 }
 
 /**
  * 按 nodes 顺序构建资源串行约束：同一资源上第 k 个节点隐含依赖
- * 第 k-1 个节点（资源释放后才能开始）。
+ * 第 k-1 个节点（资源释放后才能开始）。占用多项资源的节点会被加入
+ * 每项资源的队列，因此可能对不同的前驱 / 后继各产生一条约束。
  */
 function buildResourceConstraints<N extends SchedNodeLike>(nodes: N[]): ResourceConstraint {
   const ordered = new Map<string, string[]>();
-  const pred = new Map<string, string>();
-  const byNode = new Map<string, string>();
+  const predEdges = new Map<string, { source: string; target: string; resources: string[] }>();
+  const byNode = new Map<string, string[]>();
   for (const n of nodes) {
-    const res = normalizeResource(n.data.resource);
-    if (!res) continue;
-    let seq = ordered.get(res);
-    if (!seq) {
-      seq = [];
-      ordered.set(res, seq);
+    const resList = nodeResources(n.data);
+    if (resList.length === 0) continue;
+    byNode.set(n.id, resList);
+    for (const res of resList) {
+      let seq = ordered.get(res);
+      if (!seq) {
+        seq = [];
+        ordered.set(res, seq);
+      }
+      const prev = seq[seq.length - 1];
+      if (prev !== undefined && prev !== n.id) {
+        const key = `${prev}->${n.id}`;
+        const existing = predEdges.get(key);
+        if (existing) {
+          if (!existing.resources.includes(res)) existing.resources.push(res);
+        } else {
+          predEdges.set(key, { source: prev, target: n.id, resources: [res] });
+        }
+      }
+      seq.push(n.id);
     }
-    const prev = seq[seq.length - 1];
-    if (prev !== undefined) pred.set(n.id, prev);
-    seq.push(n.id);
-    byNode.set(n.id, res);
   }
-  return { ordered, pred, byNode };
+  return { ordered, predEdges, byNode };
 }
 
 /**
@@ -274,10 +322,17 @@ export function computeSchedule<N extends SchedNodeLike>(
     succs.get(e.source)!.push(e.target);
     allConstraintEdges.push({ source: e.source, target: e.target });
   }
-  for (const [id, prev] of rc.pred) {
-    preds.get(id)!.push(prev);
-    succs.get(prev)!.push(id);
-    allConstraintEdges.push({ source: prev, target: id });
+  // 资源串行约束：占用多项资源的节点对每项资源各有一个前驱；
+  // 去重同一节点对（显式边已覆盖或多资源产生的重复约束）后并入统一图。
+  const explicitPairs = new Set(validEdges.map((e) => `${e.source}->${e.target}`));
+  const resourcePairs = new Set<string>();
+  for (const edge of rc.predEdges.values()) {
+    const key = `${edge.source}->${edge.target}`;
+    if (explicitPairs.has(key) || resourcePairs.has(key)) continue;
+    resourcePairs.add(key);
+    preds.get(edge.target)!.push(edge.source);
+    succs.get(edge.source)!.push(edge.target);
+    allConstraintEdges.push({ source: edge.source, target: edge.target });
   }
 
   const order = topoOrder(nodes, allConstraintEdges);
@@ -341,7 +396,7 @@ export function computeSchedule<N extends SchedNodeLike>(
       latestEnd: le,
       slack,
       critical: critical && !hasCycle,
-      resource: rc.byNode.get(id) ?? '',
+      resources: rc.byNode.get(id) ?? [],
     });
   }
 
@@ -360,23 +415,23 @@ export function computeSchedule<N extends SchedNodeLike>(
     if (isBinding(e.source, e.target)) criticalEdgeIds.add(e.id);
   }
 
-  // 资源串行合成连线及其关键标记
+  // 资源串行合成连线及其关键标记。
+  // 同一节点对若因共用多项资源产生多条约束，仅画一条连线，
+  // 标签列出全部资源名；显式依赖已覆盖的节点对不再重复绘制。
   const resourceLinks: ResourceLink[] = [];
-  for (const [res, seq] of rc.ordered) {
-    for (let i = 1; i < seq.length; i++) {
-      const source = seq[i - 1];
-      const target = seq[i];
-      resourceLinks.push({
-        id: `${RESOURCE_EDGE_PREFIX}${res}::${source}::${target}`,
-        resource: res,
-        source,
-        target,
-        critical: isBinding(source, target),
-      });
-    }
+  for (const edge of rc.predEdges.values()) {
+    if (explicitPairs.has(`${edge.source}->${edge.target}`)) continue;
+    const [first, ...rest] = edge.resources;
+    resourceLinks.push({
+      id: `${RESOURCE_EDGE_PREFIX}${edge.source}::${edge.target}`,
+      resource: rest.length > 0 ? `${first} 等${edge.resources.length}项` : first,
+      source: edge.source,
+      target: edge.target,
+      critical: isBinding(edge.source, edge.target),
+    });
   }
 
-  // 资源队列排程
+  // 资源队列排程：同一节点在每项资源队列中展示一致的排程区间
   const resources: ResourceSchedule[] = [];
   for (const [name, seq] of rc.ordered) {
     const queue: ResourceQueueItem[] = seq.map((id) => {
@@ -389,7 +444,6 @@ export function computeSchedule<N extends SchedNodeLike>(
         critical: s.critical,
       };
     });
-    queue.sort((a, b) => a.start - b.start || a.end - b.end);
     resources.push({ name, queue, busyUntil: queue[queue.length - 1]?.end ?? 0 });
   }
   resources.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'));

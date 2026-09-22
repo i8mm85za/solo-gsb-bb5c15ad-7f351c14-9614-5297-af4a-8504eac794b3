@@ -22,7 +22,6 @@ type SortKey =
   | 'earliestEnd'
   | 'latestStart'
   | 'slack';
-
 const COLUMNS: Array<{ key: SortKey; title: string }> = [
   { key: 'label', title: '名称' },
   { key: 'cueType', title: '类型' },
@@ -52,7 +51,9 @@ export function RunTable({ nodes, schedule, selectedId, onSelect, statusById }: 
         id: n.id,
         label: n.data.label,
         cueType: n.data.cueType,
-        resource: (n.data.resource ?? '').trim(),
+        resources: n.data.resources ?? [],
+        /** 排序 / 展示用：多项资源以顿号拼接 */
+        resource: (n.data.resources ?? []).join('、'),
         duration: n.data.duration,
         delay: n.data.delay,
         earliestStart: s?.earliestStart ?? 0,
@@ -151,7 +152,17 @@ export function RunTable({ nodes, schedule, selectedId, onSelect, statusById }: 
                     </span>
                   </td>
                   <td className="cell-resource">
-                    {r.resource ? <span className="res-tag" title={`占用资源：${r.resource}`}>🎚 {r.resource}</span> : <span className="res-none">—</span>}
+                    {r.resources.length > 0 ? (
+                      <span className="res-tag-list" title={`同时占用资源：${r.resources.join('、')}`}>
+                        {r.resources.map((res) => (
+                          <span key={res} className="res-tag">
+                            🎚 {res}
+                          </span>
+                        ))}
+                      </span>
+                    ) : (
+                      <span className="res-none">—</span>
+                    )}
                   </td>
                   <td className="num">{fmt(r.earliestStart)}</td>
                   <td className="num">{fmt(r.duration)}</td>

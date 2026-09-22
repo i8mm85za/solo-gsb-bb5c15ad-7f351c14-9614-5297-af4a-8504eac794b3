@@ -25,8 +25,8 @@ export function ResourceBoard({ schedule, selectedId, onSelect, statusById }: Re
       <h2 className="panel-title">舞台资源占用（{resources.length}）</h2>
       {resources.length === 0 ? (
         <p className="panel-empty">
-          暂无资源。在节点属性的「占用资源」中填写同名资源（如追光1、麦克风A），
-          同资源提示将按节点顺序自动串行、不可重叠。
+          暂无资源。在节点属性的「占用资源」中点选或录入同名资源（如追光1、麦克风A，可多选），
+          节点会进入每项资源的串行队列，同资源提示按节点顺序自动串行、不可重叠。
         </p>
       ) : (
         <div className="res-board-scroll">
