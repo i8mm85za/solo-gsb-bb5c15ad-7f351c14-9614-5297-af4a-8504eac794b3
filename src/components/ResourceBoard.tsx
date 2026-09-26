@@ -16,6 +16,8 @@ function fmt(v: number): string {
 /**
  * 舞台资源占用面板：按资源列出串行排程队列，
  * 每项给出排程区间 [最早触发, 最早结束]，关键项红色标记。
+ * 占用多项资源的节点会出现在每个资源的队列中，
+ * 且各队列里的排程区间一致（均取自同一节点的调度结果）。
  */
 export function ResourceBoard({ schedule, selectedId, onSelect, statusById }: ResourceBoardProps) {
   const resources = schedule.resources;
@@ -25,8 +27,8 @@ export function ResourceBoard({ schedule, selectedId, onSelect, statusById }: Re
       <h2 className="panel-title">舞台资源占用（{resources.length}）</h2>
       {resources.length === 0 ? (
         <p className="panel-empty">
-          暂无资源。在节点属性的「占用资源」中填写同名资源（如追光1、麦克风A），
-          同资源提示将按节点顺序自动串行、不可重叠。
+          暂无资源。在节点属性的「占用资源」中勾选或录入资源（如追光1、麦克风A，可多选），
+          同资源提示将按节点顺序自动串行、不可重叠；占用多项资源的提示会出现在每个资源的队列中。
         </p>
       ) : (
         <div className="res-board-scroll">

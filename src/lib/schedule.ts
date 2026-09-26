@@ -3,15 +3,19 @@
  *
  * 模型约定：
  * - 每条连线 source -> target 表示「target 依赖 source」；
- * - 节点可声明占用的舞台资源（resource，如「追光1」）；
+ * - 节点可声明同时占用的多项舞台资源（resources，如「追光1」「麦克风A」）；
  *   同一资源同一时刻只能服务一个提示，因此同资源上的节点按 nodes
- *   给定的顺序自动串行：序列中靠后的节点隐含依赖前一个节点；
+ *   给定的顺序自动串行：序列中靠后的节点隐含依赖前一个节点。
+ *   占用多项资源的节点会被加入每一项资源的串行队列，
+ *   只有全部前置依赖与所需资源都释放后才能触发；
  * - 资源串行约束与显式依赖边共同参与正向 / 反向调度：
  *     最早触发 = max(所有前置约束满足时刻) + delay
  *     最早结束 = 最早触发 + duration
  *     总时长   = max(所有节点最早结束)
  *   再反向传递求最晚时刻，松弛为 0 的节点构成关键路径；
- * - 关键路径上的约束（显式依赖或资源串行）均以关键样式标记。
+ * - 关键路径上的约束（显式依赖或资源串行）均以关键样式标记；
+ * - 同一节点的最早触发 / 结束时刻是唯一的，因此它在各资源队列中
+ *   显示的排程区间天然一致。
  */
 
 export interface SchedNodeLike {
@@ -19,8 +23,8 @@ export interface SchedNodeLike {
   data: {
     duration: number;
     delay: number;
-    /** 资源名；空串 / undefined 表示不占用资源 */
-    resource?: string;
+    /** 同时占用的资源名列表；空数组 / undefined 表示不占用资源 */
+    resources?: string[];
     /** 仅用于资源队列展示，调度本身不依赖 */
     label?: string;
   };
@@ -41,8 +45,8 @@ export interface NodeSchedule {
   slack: number;
   /** 是否在关键路径上 */
   critical: boolean;
-  /** 调度生效的资源名（空串表示未占用资源） */
-  resource: string;
+  /** 调度生效的资源名列表（空数组表示未占用资源） */
+  resources: string[];
 }
 
 /** 资源队列中的一项排程 */
@@ -103,6 +107,24 @@ function nonNeg(v: number): number {
 /** 规整资源名：去首尾空白；空值统一为空串 */
 export function normalizeResource(r: unknown): string {
   return typeof r === 'string' ? r.trim() : '';
+}
+
+/**
+ * 规整资源名列表：逐项去首尾空白、剔除空项并去重（保留首次出现顺序）。
+ * 非数组输入一律视为空列表。
+ */
+export function normalizeResources(list: unknown): string[] {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of list) {
+    const name = normalizeResource(item);
+    if (name && !seen.has(name)) {
+      seen.add(name);
+      out.push(name);
+    }
+  }
+  return out;
 }
 
 /**
@@ -217,32 +239,39 @@ function topoOrder(
 interface ResourceConstraint {
   /** 每个资源上的节点 id，按 nodes 顺序（即串行顺序） */
   ordered: Map<string, string[]>;
-  /** 节点 -> 同资源队列中的前一节点 */
-  pred: Map<string, string>;
-  /** 节点 -> 所属资源名 */
-  byNode: Map<string, string>;
+  /** 节点 -> 各资源队列中的前一节点（占用几项资源就可能有几条隐含前置） */
+  pred: Map<string, string[]>;
+  /** 节点 -> 占用的资源名列表 */
+  byNode: Map<string, string[]>;
 }
 
 /**
  * 按 nodes 顺序构建资源串行约束：同一资源上第 k 个节点隐含依赖
- * 第 k-1 个节点（资源释放后才能开始）。
+ * 第 k-1 个节点（资源释放后才能开始）。节点占用多项资源时，
+ * 分别加入每一项资源的串行队列，从而获得多条隐含前置。
  */
 function buildResourceConstraints<N extends SchedNodeLike>(nodes: N[]): ResourceConstraint {
   const ordered = new Map<string, string[]>();
-  const pred = new Map<string, string>();
-  const byNode = new Map<string, string>();
+  const pred = new Map<string, string[]>();
+  const byNode = new Map<string, string[]>();
   for (const n of nodes) {
-    const res = normalizeResource(n.data.resource);
-    if (!res) continue;
-    let seq = ordered.get(res);
-    if (!seq) {
-      seq = [];
-      ordered.set(res, seq);
+    const resources = normalizeResources(n.data.resources);
+    if (resources.length === 0) continue;
+    byNode.set(n.id, resources);
+    for (const res of resources) {
+      let seq = ordered.get(res);
+      if (!seq) {
+        seq = [];
+        ordered.set(res, seq);
+      }
+      const prev = seq[seq.length - 1];
+      if (prev !== undefined) {
+        const list = pred.get(n.id);
+        if (list) list.push(prev);
+        else pred.set(n.id, [prev]);
+      }
+      seq.push(n.id);
     }
-    const prev = seq[seq.length - 1];
-    if (prev !== undefined) pred.set(n.id, prev);
-    seq.push(n.id);
-    byNode.set(n.id, res);
   }
   return { ordered, pred, byNode };
 }
@@ -274,10 +303,12 @@ export function computeSchedule<N extends SchedNodeLike>(
     succs.get(e.source)!.push(e.target);
     allConstraintEdges.push({ source: e.source, target: e.target });
   }
-  for (const [id, prev] of rc.pred) {
-    preds.get(id)!.push(prev);
-    succs.get(prev)!.push(id);
-    allConstraintEdges.push({ source: prev, target: id });
+  for (const [id, prevs] of rc.pred) {
+    for (const prev of prevs) {
+      preds.get(id)!.push(prev);
+      succs.get(prev)!.push(id);
+      allConstraintEdges.push({ source: prev, target: id });
+    }
   }
 
   const order = topoOrder(nodes, allConstraintEdges);
@@ -341,7 +372,7 @@ export function computeSchedule<N extends SchedNodeLike>(
       latestEnd: le,
       slack,
       critical: critical && !hasCycle,
-      resource: rc.byNode.get(id) ?? '',
+      resources: rc.byNode.get(id) ?? [],
     });
   }
 

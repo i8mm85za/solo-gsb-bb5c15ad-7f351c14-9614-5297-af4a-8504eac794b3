@@ -7,10 +7,10 @@ function fmt(v: number): string {
   return `${Number(v.toFixed(1))}s`;
 }
 
-/** 自定义提示节点：按类型着色，展示时长 / 延迟 / 资源 / 最早触发时刻，关键路径高亮 */
+/** 自定义提示节点：按类型着色，展示时长 / 延迟 / 资源（可多项）/ 最早触发时刻，关键路径高亮 */
 export function CueNode({ data, selected }: NodeProps<CueFlowNode>) {
   const meta = CUE_TYPE_META[data.cueType];
-  const resource = data.resource?.trim() ?? '';
+  const resources = data.resources ?? [];
   const runStatus = data.runStatus;
   const cls = [
     'cue-node',
@@ -40,9 +40,13 @@ export function CueNode({ data, selected }: NodeProps<CueFlowNode>) {
         <span>⏱ {fmt(data.duration)}</span>
         {data.delay > 0 ? <span>⏳ +{fmt(data.delay)}</span> : null}
       </div>
-      {resource ? (
-        <div className="cue-node-res" title={`占用舞台资源：${resource}`}>
-          🎚 {resource}
+      {resources.length > 0 ? (
+        <div className="cue-node-res-list">
+          {resources.map((r) => (
+            <span className="cue-node-res" key={r} title={`占用舞台资源：${r}`}>
+              🎚 {r}
+            </span>
+          ))}
         </div>
       ) : null}
       {typeof data.earliestStart === 'number' ? (

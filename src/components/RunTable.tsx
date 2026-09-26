@@ -48,11 +48,14 @@ export function RunTable({ nodes, schedule, selectedId, onSelect, statusById }: 
   const rows = useMemo(() => {
     const list = nodes.map((n) => {
       const s = schedule.byId.get(n.id);
+      const resources = n.data.resources ?? [];
       return {
         id: n.id,
         label: n.data.label,
         cueType: n.data.cueType,
-        resource: (n.data.resource ?? '').trim(),
+        resources,
+        /** 资源名拼接，用于排序 */
+        resource: resources.join('、'),
         duration: n.data.duration,
         delay: n.data.delay,
         earliestStart: s?.earliestStart ?? 0,
@@ -151,7 +154,17 @@ export function RunTable({ nodes, schedule, selectedId, onSelect, statusById }: 
                     </span>
                   </td>
                   <td className="cell-resource">
-                    {r.resource ? <span className="res-tag" title={`占用资源：${r.resource}`}>🎚 {r.resource}</span> : <span className="res-none">—</span>}
+                    {r.resources.length > 0 ? (
+                      <span className="res-tags" title={`占用资源：${r.resource}`}>
+                        {r.resources.map((name) => (
+                          <span className="res-tag" key={name}>
+                            🎚 {name}
+                          </span>
+                        ))}
+                      </span>
+                    ) : (
+                      <span className="res-none">—</span>
+                    )}
                   </td>
                   <td className="num">{fmt(r.earliestStart)}</td>
                   <td className="num">{fmt(r.duration)}</td>

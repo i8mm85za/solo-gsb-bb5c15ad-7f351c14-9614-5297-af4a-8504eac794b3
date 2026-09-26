@@ -27,7 +27,7 @@ import {
   combinedGraphHasCycle,
   computeSchedule,
   layeredLayout,
-  normalizeResource,
+  normalizeResources,
   wouldCreateCycleWithResources,
 } from './lib/schedule';
 import { useReplay } from './hooks/useReplay';
@@ -157,7 +157,7 @@ export default function App() {
           cueType: type,
           duration: 3,
           delay: 0,
-          resource: '',
+          resources: [],
         },
         selected: true,
       };
@@ -169,20 +169,17 @@ export default function App() {
 
   const updateCue = useCallback(
     (id: string, patch: Partial<CueNodeData>) => {
-      // 资源名修改后，资源串行顺序可能与显式依赖矛盾（成环），拒绝本次修改并恢复原值
-      if (patch.resource !== undefined) {
+      // 资源列表修改后，资源串行顺序可能与显式依赖矛盾（成环），拒绝本次修改并保留原值
+      if (patch.resources !== undefined) {
+        const next = normalizeResources(patch.resources);
         const candidate = nodes.map((n) =>
-          n.id === id ? { ...n, data: { ...n.data, resource: normalizeResource(patch.resource) } } : n,
+          n.id === id ? { ...n, data: { ...n.data, resources: next } } : n,
         );
         if (combinedGraphHasCycle(candidate, edges)) {
-          showToast('该资源会与依赖顺序冲突：同资源提示按节点顺序串行，请调整资源或节点顺序');
-          const prev = nodes.find((n) => n.id === id)?.data.resource ?? '';
-          setNodes((nds) =>
-            nds.map((n) => (n.id === id ? { ...n, data: { ...n.data, resource: prev } } : n)),
-          );
+          showToast('该资源组合会与依赖 / 资源串行顺序形成环路，已保留原资源设置');
           return;
         }
-        patch = { ...patch, resource: normalizeResource(patch.resource) };
+        patch = { ...patch, resources: next };
       }
       setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...patch } } : n)));
     },
@@ -266,7 +263,7 @@ export default function App() {
             cueType: n.cueType,
             duration: n.duration,
             delay: n.delay,
-            resource: n.resource,
+            resources: n.resources,
           },
           selected: false,
         })),
